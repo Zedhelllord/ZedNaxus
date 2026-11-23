@@ -1,6 +1,6 @@
 const path = require("path");
 const { login } = require("ws3-fca");
-const { loadCommands, handleMessage, handleEvent, commands } = require("./main");
+const { createCommandContext, loadCommands, handleMessage, handleEvent, commands } = require("./main");
 const { loadConfig, ConfigError } = require("./config");
 const { createLogger } = require("./logger");
 const { acquireLock } = require("./process-lock");
@@ -357,7 +357,27 @@ function startMultiAccountEngine() {
     accountsEngine = createAccountsEngine({
       store: accountsStore,
       onMessage: (account, event) => {
-        Promise.resolve(handleMessage(account.api, event)).catch((error) =>
+        const entry = accountsEngine.accounts.get(account.id);
+        if (!entry || !entry.context) return;
+
+        const api = account.api;
+        if (!api) return;
+
+        const botID =
+          typeof api.getCurrentUserID === "function"
+            ? String(api.getCurrentUserID() || "")
+            : "";
+
+        const allBotIds = accountsEngine.getAllBotIds();
+        const anyMentioned = accountsEngine.isAnyBotMentioned(event, allBotIds);
+
+        if (anyMentioned && !accountsEngine.isMentioned(event, botID)) return;
+
+        const cleanEvent = anyMentioned
+          ? accountsEngine.stripMentionFromEvent(event, botID)
+          : event;
+
+        Promise.resolve(entry.context.handleMessage(api, cleanEvent)).catch((error) =>
           log.error("messages", "خطأ في معالجة رسالة حساب", {
             id: account.id,
             message: error.message || error,
@@ -366,8 +386,10 @@ function startMultiAccountEngine() {
       },
       onEvent: (account, event) => {
         if (event?.type === "message" || event?.type === "message_reply") return;
+        const entry = accountsEngine.accounts.get(account.id);
+        if (!entry || !entry.context) return;
         try {
-          handleEvent(account.api, event);
+          entry.context.handleEvent(account.api, event);
         } catch (error) {
           log.error("messages", "خطأ في معالجة حدث حساب", {
             id: account.id,
@@ -376,6 +398,7 @@ function startMultiAccountEngine() {
         }
       },
       log,
+      contextFactory: () => createCommandContext(),
     });
     adminPanel = createAdminPanel({
       password: config.cookiePanelPassword,

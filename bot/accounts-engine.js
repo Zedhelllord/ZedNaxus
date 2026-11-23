@@ -183,17 +183,28 @@ function isMentioned(event, botID) {
   if (!event || !event.mentions) return false;
   if (typeof event.mentions !== "object") return false;
   const normalizedBot = normalizeFacebookID(botID);
+  if (!normalizedBot) return false;
   for (const mentionID of Object.keys(event.mentions)) {
     if (normalizeFacebookID(mentionID) === normalizedBot) return true;
   }
   return false;
 }
 
-function isAnyBotMentioned(event, allBotIds) {
-  if (!event || !event.mentions) return false;
-  if (typeof event.mentions !== "object") return false;
-  const mentionIds = Object.keys(event.mentions).map(normalizeFacebookID);
-  return allBotIds.some((botId) => mentionIds.includes(normalizeFacebookID(botId)));
+function stripMentionFromEvent(event, botID) {
+  if (!event || !event.mentions) return event;
+  const mentions = { ...event.mentions };
+  let body = String(event.body || "");
+  const normalizedBot = normalizeFacebookID(botID);
+  for (const [mentionID, tag] of Object.entries(mentions)) {
+    if (normalizeFacebookID(mentionID) === normalizedBot) {
+      if (typeof tag === "string" && tag.trim()) {
+        body = body.replace(tag, " ");
+      }
+      delete mentions[mentionID];
+    }
+  }
+  body = body.replace(/\s+/g, " ").trim();
+  return { ...event, body, mentions };
 }
 
 function createAccountsEngine({ store, onMessage, onEvent, log, loginFn, contextFactory }) {
@@ -211,6 +222,12 @@ function createAccountsEngine({ store, onMessage, onEvent, log, loginFn, context
       }
     }
     return ids;
+  }
+
+  function isAnyBotMentioned(event, allBotIds) {
+    if (!event || !event.mentions || typeof event.mentions !== "object") return false;
+    const mentionIds = Object.keys(event.mentions).map(normalizeFacebookID);
+    return allBotIds.some((botId) => mentionIds.includes(normalizeFacebookID(botId)));
   }
 
   async function startAccount(idText, state) {
@@ -279,59 +296,6 @@ function createAccountsEngine({ store, onMessage, onEvent, log, loginFn, context
     return entry ? snapshot(entry.account) : null;
   }
 
-  function getBotUserId(idText) {
-    const entry = accounts.get(idText);
-    if (!entry || !entry.account.api) return null;
-    if (typeof entry.account.api.getCurrentUserID !== "function") return null;
-    const id = String(entry.account.api.getCurrentUserID() || "");
-    return id || null;
-  }
-
-  function dispatchMessage(event) {
-    const allBotIds = getAllBotIds();
-    const anyMentioned = isAnyBotMentioned(event, allBotIds);
-
-    const dispatched = [];
-    for (const [idText, entry] of accounts) {
-      const api = entry.account.api;
-      if (!api || !entry.context) continue;
-
-      const botID =
-        typeof api.getCurrentUserID === "function"
-          ? String(api.getCurrentUserID() || "")
-          : "";
-
-      if (anyMentioned && !isMentioned(event, botID)) continue;
-
-      Promise.resolve(entry.context.handleMessage(api, event)).catch((error) =>
-        log.error("messages", "خطأ في معالجة رسالة حساب", {
-          id: idText,
-          message: error.message || error,
-        }),
-      );
-      dispatched.push(idText);
-    }
-    return dispatched;
-  }
-
-  function dispatchEvent(event) {
-    const dispatched = [];
-    for (const [idText, entry] of accounts) {
-      const api = entry.account.api;
-      if (!api || !entry.context) continue;
-      try {
-        entry.context.handleEvent(api, event);
-      } catch (error) {
-        log.error("messages", "خطأ في معالجة حدث حساب", {
-          id: idText,
-          message: error.message || error,
-        });
-      }
-      dispatched.push(idText);
-    }
-    return dispatched;
-  }
-
   return {
     startAccount,
     stopAccount,
@@ -340,9 +304,11 @@ function createAccountsEngine({ store, onMessage, onEvent, log, loginFn, context
     stopAll,
     statuses,
     statusOf,
-    getBotUserId,
-    dispatchMessage,
-    dispatchEvent,
+    getAllBotIds,
+    isAnyBotMentioned,
+    isMentioned,
+    stripMentionFromEvent,
+    accounts,
   };
 }
 
