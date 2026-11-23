@@ -1,5 +1,6 @@
 const { createListenerSession } = require("./listener-session");
 const { classifyError } = require("./login-errors");
+const { normalizeFacebookID } = require("./main");
 
 const LOGIN_OPTIONS = {
   listenEvents: true,
@@ -178,9 +179,39 @@ function createAccount({ id, name, onMessage, onEvent, log, fcaLogin }) {
   return { account, start, stop };
 }
 
-function createAccountsEngine({ store, onMessage, onEvent, log, loginFn }) {
+function isMentioned(event, botID) {
+  if (!event || !event.mentions) return false;
+  if (typeof event.mentions !== "object") return false;
+  const normalizedBot = normalizeFacebookID(botID);
+  for (const mentionID of Object.keys(event.mentions)) {
+    if (normalizeFacebookID(mentionID) === normalizedBot) return true;
+  }
+  return false;
+}
+
+function isAnyBotMentioned(event, allBotIds) {
+  if (!event || !event.mentions) return false;
+  if (typeof event.mentions !== "object") return false;
+  const mentionIds = Object.keys(event.mentions).map(normalizeFacebookID);
+  return allBotIds.some((botId) => mentionIds.includes(normalizeFacebookID(botId)));
+}
+
+function createAccountsEngine({ store, onMessage, onEvent, log, loginFn, contextFactory }) {
   const fcaLogin = loginFn || require("ws3-fca").login;
   const accounts = new Map();
+  const makeContext = contextFactory || (() => null);
+
+  function getAllBotIds() {
+    const ids = [];
+    for (const entry of accounts.values()) {
+      const api = entry.account.api;
+      if (api && typeof api.getCurrentUserID === "function") {
+        const id = String(api.getCurrentUserID() || "");
+        if (id) ids.push(id);
+      }
+    }
+    return ids;
+  }
 
   async function startAccount(idText, state) {
     const record = store.get(idText);
@@ -197,6 +228,8 @@ function createAccountsEngine({ store, onMessage, onEvent, log, loginFn }) {
       return { ok: true };
     }
     entry = createAccount({ id: record.id, name: record.name, onMessage, onEvent, log, fcaLogin });
+    entry.context = makeContext(record.id);
+    if (entry.context) entry.context.loadCommands();
     accounts.set(idText, entry);
     entry.account.enabled = true;
     entry.account.appState = state || store.decrypt(idText);
@@ -246,7 +279,71 @@ function createAccountsEngine({ store, onMessage, onEvent, log, loginFn }) {
     return entry ? snapshot(entry.account) : null;
   }
 
-  return { startAccount, stopAccount, removeAccount, startAll, stopAll, statuses, statusOf };
+  function getBotUserId(idText) {
+    const entry = accounts.get(idText);
+    if (!entry || !entry.account.api) return null;
+    if (typeof entry.account.api.getCurrentUserID !== "function") return null;
+    const id = String(entry.account.api.getCurrentUserID() || "");
+    return id || null;
+  }
+
+  function dispatchMessage(event) {
+    const allBotIds = getAllBotIds();
+    const anyMentioned = isAnyBotMentioned(event, allBotIds);
+
+    const dispatched = [];
+    for (const [idText, entry] of accounts) {
+      const api = entry.account.api;
+      if (!api || !entry.context) continue;
+
+      const botID =
+        typeof api.getCurrentUserID === "function"
+          ? String(api.getCurrentUserID() || "")
+          : "";
+
+      if (anyMentioned && !isMentioned(event, botID)) continue;
+
+      Promise.resolve(entry.context.handleMessage(api, event)).catch((error) =>
+        log.error("messages", "خطأ في معالجة رسالة حساب", {
+          id: idText,
+          message: error.message || error,
+        }),
+      );
+      dispatched.push(idText);
+    }
+    return dispatched;
+  }
+
+  function dispatchEvent(event) {
+    const dispatched = [];
+    for (const [idText, entry] of accounts) {
+      const api = entry.account.api;
+      if (!api || !entry.context) continue;
+      try {
+        entry.context.handleEvent(api, event);
+      } catch (error) {
+        log.error("messages", "خطأ في معالجة حدث حساب", {
+          id: idText,
+          message: error.message || error,
+        });
+      }
+      dispatched.push(idText);
+    }
+    return dispatched;
+  }
+
+  return {
+    startAccount,
+    stopAccount,
+    removeAccount,
+    startAll,
+    stopAll,
+    statuses,
+    statusOf,
+    getBotUserId,
+    dispatchMessage,
+    dispatchEvent,
+  };
 }
 
 module.exports = { createAccountsEngine };
