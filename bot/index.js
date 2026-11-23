@@ -357,9 +357,24 @@ function startMultiAccountEngine() {
     accountsEngine = createAccountsEngine({
       store: accountsStore,
       onMessage: (account, event) => {
-        log.info("accounts", "رسالة من حساب متزامن", { id: account.id, thread: event.threadID });
+        Promise.resolve(handleMessage(account.api, event)).catch((error) =>
+          log.error("messages", "خطأ في معالجة رسالة حساب", {
+            id: account.id,
+            message: error.message || error,
+          }),
+        );
       },
-      onEvent: () => {},
+      onEvent: (account, event) => {
+        if (event?.type === "message" || event?.type === "message_reply") return;
+        try {
+          handleEvent(account.api, event);
+        } catch (error) {
+          log.error("messages", "خطأ في معالجة حدث حساب", {
+            id: account.id,
+            message: error.message || error,
+          });
+        }
+      },
       log,
     });
     adminPanel = createAdminPanel({
@@ -410,6 +425,8 @@ process.on("unhandledRejection", (reason) => {
 async function boot() {
   const port = await healthServer.listen(config.port);
   log.info("bot", "بدء تشغيل البوت", { port, supervised: isSupervised, pid: process.pid });
+
+  loadCommands();
 
   if (config.cookiePanelPassword) {
     if (startMultiAccountEngine()) {

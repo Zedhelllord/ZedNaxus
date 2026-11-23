@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node supervisor.js",
     "dev": "node supervisor.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "postinstall": "node scripts/patch-ws3-fca.js"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
@@ -23,5 +24,8 @@
     "@ffprobe-installer/linux-x64@5.2.0": true,
     "canvas@3.2.3": true,
     "es5-ext@0.10.64": true
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }
